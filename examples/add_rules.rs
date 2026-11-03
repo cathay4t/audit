@@ -12,7 +12,7 @@ use audit::{
         constants::AUDIT_ARCH_X86_64, RuleAction, RuleField, RuleFieldFlags,
         RuleFlags, RuleMessage, RuleSyscalls,
     },
-    Error, Handle,
+    AuditError, Handle,
 };
 
 #[tokio::main]
@@ -23,7 +23,7 @@ async fn main() -> Result<(), String> {
     add_rules(handle).await.map_err(|e| format!("{e}"))
 }
 
-async fn add_rules(mut handle: Handle) -> Result<(), Error> {
+async fn add_rules(mut handle: Handle) -> Result<(), AuditError> {
     let mut etc_passwd_rule = RuleMessage::default();
     etc_passwd_rule.flags = RuleFlags::FilterExit;
     etc_passwd_rule.action = RuleAction::Always;

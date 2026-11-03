@@ -3,7 +3,7 @@
 //! In this example, we create a netlink connection, and send a request to
 //! retrieve the list of rules. We receive a stream of rule messages that we
 //! just prints to the terminal.
-use audit::{new_connection, Error, Handle};
+use audit::{new_connection, AuditError, Handle};
 use futures::stream::TryStreamExt;
 
 #[tokio::main]
@@ -14,7 +14,7 @@ async fn main() -> Result<(), String> {
     list_rules(handle).await.map_err(|e| format!("{e}"))
 }
 
-async fn list_rules(mut handle: Handle) -> Result<(), Error> {
+async fn list_rules(mut handle: Handle) -> Result<(), AuditError> {
     let mut rules = handle.list_rules();
     while let Some(rule) = rules.try_next().await? {
         println!("{rule:?}");

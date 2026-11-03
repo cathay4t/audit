@@ -37,7 +37,7 @@ pub const AUDIT_VERSION_LATEST: u32 = 127;
 pub const AUDIT_VERSION_BACKLOG_LIMIT: u32 = 1;
 pub const AUDIT_VERSION_BACKLOG_WAIT_TIME: u32 = 2;
 
-use crate::Error;
+use crate::AuditError;
 
 /// A handle to the netlink connection, used to send and receive netlink
 /// messsage
@@ -53,10 +53,11 @@ impl Handle {
     pub fn request(
         &mut self,
         message: NetlinkMessage<AuditMessage>,
-    ) -> Result<impl Stream<Item = NetlinkMessage<AuditMessage>>, Error> {
+    ) -> Result<impl Stream<Item = NetlinkMessage<AuditMessage>>, AuditError>
+    {
         self.0
             .request(message, SocketAddr::new(0, 0))
-            .map_err(|_| Error::RequestFailed)
+            .map_err(AuditError::from)
     }
 
     /// Send a netlink message that expects an acknowledgement. The returned
@@ -65,16 +66,16 @@ impl Handle {
     async fn acked_request(
         &mut self,
         message: NetlinkMessage<AuditMessage>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), AuditError> {
         let mut response = self.request(message)?;
         if let Some(message) = response.next().await {
             let (header, payload) = message.into_parts();
             // NetlinkError and AuditMessage are forwarded to the
             // handle. Ack is signaled by the stream finishing.
             if let NetlinkPayload::Error(err_msg) = payload {
-                Err(Error::NetlinkError(err_msg))
+                Err(AuditError::NetlinkError(err_msg))
             } else {
-                Err(Error::UnexpectedMessage(NetlinkMessage::new(
+                Err(AuditError::UnexpectedMessage(NetlinkMessage::new(
                     header, payload,
                 )))
             }
@@ -84,7 +85,10 @@ impl Handle {
     }
 
     /// Add the given rule
-    pub async fn add_rule(&mut self, rule: RuleMessage) -> Result<(), Error> {
+    pub async fn add_rule(
+        &mut self,
+        rule: RuleMessage,
+    ) -> Result<(), AuditError> {
         let mut req = NetlinkMessage::from(AuditMessage::AddRule(rule));
         req.header.flags =
             NLM_F_REQUEST | NLM_F_ACK | NLM_F_EXCL | NLM_F_CREATE;
@@ -92,7 +96,10 @@ impl Handle {
     }
 
     /// Deletes a given rule
-    pub async fn del_rule(&mut self, rule: RuleMessage) -> Result<(), Error> {
+    pub async fn del_rule(
+        &mut self,
+        rule: RuleMessage,
+    ) -> Result<(), AuditError> {
         let mut req = NetlinkMessage::from(AuditMessage::DelRule(rule));
         req.header.flags = NLM_F_REQUEST | NLM_F_ACK | NLM_F_NONREC;
         self.acked_request(req).await
@@ -101,7 +108,7 @@ impl Handle {
     /// List the current rules
     pub fn list_rules(
         &mut self,
-    ) -> impl TryStream<Ok = RuleMessage, Error = Error> {
+    ) -> impl TryStream<Ok = RuleMessage, Error = AuditError> {
         let mut req = NetlinkMessage::from(AuditMessage::ListRules(None));
         req.header.flags = NLM_F_REQUEST | NLM_F_DUMP;
 
@@ -113,15 +120,15 @@ impl Handle {
                         Some(rule_msg),
                     )) => Ok(rule_msg),
                     NetlinkPayload::Error(err_msg) => {
-                        Err(Error::NetlinkError(err_msg))
+                        Err(AuditError::NetlinkError(err_msg))
                     }
-                    _ => Err(Error::UnexpectedMessage(NetlinkMessage::new(
-                        header, payload,
-                    ))),
+                    _ => Err(AuditError::UnexpectedMessage(
+                        NetlinkMessage::new(header, payload),
+                    )),
                 }
             })),
             Err(e) => Either::Right(
-                future::err::<RuleMessage, Error>(e).into_stream(),
+                future::err::<RuleMessage, AuditError>(e).into_stream(),
             ),
         }
     }
@@ -134,7 +141,7 @@ impl Handle {
     /// disable and enable events, you will want to call the
     /// `Handle::set_enabled` and `Handle::set_pid` directly, so as to
     /// handle the errors in a more granular manner.
-    pub async fn enable_events(&mut self) -> Result<(), Error> {
+    pub async fn enable_events(&mut self) -> Result<(), AuditError> {
         let mut status = StatusMessage::new();
         status.enabled = 1;
         status.pid = process::id();
@@ -152,7 +159,7 @@ impl Handle {
     ///
     /// See `Handle::enable_events` for a more convenient helper to enable
     /// events in a single call.
-    pub async fn set_enabled(&mut self, value: bool) -> Result<(), Error> {
+    pub async fn set_enabled(&mut self, value: bool) -> Result<(), AuditError> {
         let mut status = StatusMessage::new();
         status.enabled = if value { 1 } else { 0 };
         status.mask = AUDIT_STATUS_ENABLED;
@@ -167,7 +174,7 @@ impl Handle {
     /// - Your own pid, to receive audit events
     /// - 0, to unset the PID restriction, for example when disabling the audit
     ///   connection.
-    pub async fn set_pid(&mut self, pid: u32) -> Result<(), Error> {
+    pub async fn set_pid(&mut self, pid: u32) -> Result<(), AuditError> {
         let mut status = StatusMessage::new();
         status.pid = pid;
         status.mask = AUDIT_STATUS_PID;
@@ -177,12 +184,13 @@ impl Handle {
     }
 
     /// Get current audit status
-    pub async fn get_status(&mut self) -> Result<StatusMessage, Error> {
+    pub async fn get_status(&mut self) -> Result<StatusMessage, AuditError> {
         let mut req = NetlinkMessage::from(AuditMessage::GetStatus(None));
         req.header.flags = NLM_F_REQUEST | NLM_F_DUMP;
         let mut request = self.request(req)?;
 
-        let response = request.next().await.ok_or(Error::RequestFailed)?;
+        let response =
+            request.next().await.ok_or(AuditError::NoMessageReceived)?;
 
         match response.into_parts() {
             (
@@ -191,7 +199,7 @@ impl Handle {
                     status,
                 ))),
             ) => Ok(status),
-            (header, payload) => Err(Error::UnexpectedMessage(
+            (header, payload) => Err(AuditError::UnexpectedMessage(
                 NetlinkMessage::new(header, payload),
             )),
         }
@@ -204,7 +212,7 @@ impl Handle {
     pub async fn set_status(
         &mut self,
         status: StatusMessage,
-    ) -> Result<(), Error> {
+    ) -> Result<(), AuditError> {
         let mut req = NetlinkMessage::from(AuditMessage::SetStatus(status));
         req.header.flags = NLM_F_REQUEST | NLM_F_ACK;
         self.acked_request(req).await
